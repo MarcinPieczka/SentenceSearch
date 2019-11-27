@@ -19,6 +19,7 @@ def main(collect_all, date_from, date_to):
     search_page_url = prepare_search_page_url(collect_all, date_from, date_to)
     for url in document_urls_generator(search_page_url):
         print(url)
+        
 
 def prepare_search_page_url(collect_all, date_from, date_to):
     if collect_all:
@@ -45,16 +46,12 @@ class document_urls_generator():
             if self.links:
                 return self.links.popleft()
             else:
-                print(self.url.format(self.page_nr))
                 response = requests.get(self.url.format(self.page_nr))
                 if not response:
                     raise StopIteration
                 self.page_nr += 1
                 self.page = BeautifulSoup(response.text, 'html.parser')
                 self.links = list(self.page.find_all('a'))
-                for link in self.links:
-                    print(list(link))
-                    print(link.attrs.get('href'))
                 self.links = deque(
                     filter(lambda l: l.attrs.get('href', '').startswith('/details'), self.links)  # .startswith('/details')
                 )
