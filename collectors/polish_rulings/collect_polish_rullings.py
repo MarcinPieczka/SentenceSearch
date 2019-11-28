@@ -3,41 +3,48 @@ import argparse
 import requests
 import datetime
 import logging
+from time import sleep
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from bs4 import BeautifulSoup
 from collections import deque
+from pprint import pprint
 
+URL_BASE = 'http://orzeczenia.ms.gov.pl'
 SEARCH_PAGE_URL_FORMAT = ('http://orzeczenia.ms.gov.pl/search/advanced/$N/$N' +
 '/$N/$N/$N/$N/$N/{date_from}/{date_to}/$N/$N/$N/$N/$N/$N/score/descending/')
-logging.basicConfig()
-log = logging.getLogger(__name__)
-log.setLevel(logging.INFO)
+
+TOO_MUCH_REQUESTS_IDENTIFIER = "Wykryliśmy zbyt dużą liczbę zapytań"
+
 
 def main(collect_all, date_from, date_to):
+    conf = {'sleep_time': 30}
     data = {}
     if not any((collect_all, date_from, date_to)):
         print("You have to set at least one parameter")
         return
     search_page_url = prepare_search_page_url(collect_all, date_from, date_to)
-    for url in DocURLGetter(search_page_url):
+    for url, requests_restricted in DocURLGetter(search_page_url):
+        if requests_restricted:
+            restriction_management(conf)
+            continue
+
+        sleep(conf.get('sleep_time', 0))
+        print(f'url: {url}')
         data[url] = {}
-        details_url = url
-        content_url = url.replace('details', 'content')
-        regulations_url = url.replace('details', 'regulations')
-
-        print(details_url, content_url, regulations_url)
-
 
         with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [
-                executor.submit(parse_details_page, details_url),
-                executor.submit(parse_content_page, content_url),
-                executor.submit(parse_regulations_page, regulations_url),
-            ]
+            futures = [executor.submit(fn, url) for fn in 
+            (parse_details_page, parse_content_page, parse_regulations_page)]
             for future in as_completed(futures):
                 data[url].update(future.result())
-        
+        pprint(data)
+
+def restriction_management(conf):
+    conf['sleep_time'] * 1.5
+    print(f"Too much requests, sleeping {conf['sleep_time']}s")
+    sleep(conf.get('sleep_time', 0))
+
 
 def prepare_search_page_url(collect_all, date_from, date_to):
     if collect_all:
@@ -49,41 +56,94 @@ def prepare_search_page_url(collect_all, date_from, date_to):
     return SEARCH_PAGE_URL_FORMAT.format(date_from=date_from, date_to=date_to) + '{}'
 
 def parse_details_page(url):
-    return {}
+    result = {}
+    url = URL_BASE + url
+    page = url_to_bs4(url)
+    if not page:
+        return {}
+    try:
+        elems = (page.find_all('div', {'class': 'single_result'})[0]
+            .find_all(['dd', 'dt']))
+    except:
+        print(f'THIS IS THE PAGE: {page}')
+        raise
+    current = None
+    for elem in elems:
+        print('#############################################################')
+
+        if elem.name == 'dt':
+            current = str(elem.content)
+            result[current] = []
+        else:
+            print('ELSE_____________')
+            print(elem)
+            if len(list(elem)) == 1:
+                result[current].append(list(elem)[0])
+            else:
+                print('STRANGE_______BR_______________________!!!!!!!!!!!!_')
+                content = list(filter(lambda x: bool(x), [s.replace('<dd>', '')
+                    .replace('<dd/>', '').replace('</dd>', '').strip() for s in 
+                    list(filter(lambda x: bool(x), str(elem).split('<br/>')))
+                ]))
+                print(content)
+                result[current].extend(content)
+
+
+    return {'details': list(result)}
 
 def parse_content_page(url):
+    url = URL_BASE + url.replace('details', 'content')
     return {}
+
 
 def parse_regulations_page(url):
+    url = URL_BASE + url.replace('details', 'regulations')
     return {}
         
+def url_to_bs4(url):
+    response = requests.get(url)
+    if response:
+        page = BeautifulSoup(response.text, 'html.parser')
+        if page.find_all('div', {'class': 'single_result'}):
+            DocURLGetter.append_left_to_queue(url)
+        else:
+            return page
+        
+
 
 class DocURLGetter():
+    links = deque()
+
     def __init__(self, url):
         self.url = url
         self.page = None
         self.page_nr = 1
-        self.links = None
 
     def __iter__(self):
         return self
 
     def __next__(self):
         while True:
-            if self.links:
-                return self.links.popleft()
+            if DocURLGetter.links:
+                return DocURLGetter.links.popleft(), False
             else:
-                response = requests.get(self.url.format(self.page_nr))
-                if not response:
-                    raise StopIteration
+                self.page = url_to_bs4(self.url.format(self.page_nr))
+                if not self.page:
+                    self.links = deque()
+                    return {}, True
                 self.page_nr += 1
-                self.page = BeautifulSoup(response.text, 'html.parser')
-                self.links = filter(
+                links = filter(
                     lambda l: l.attrs.get('href', '').startswith('/details'), 
                     self.page.find_all('a')
                 )
-                print(self.links)
-                self.links = deque(map(lambda l: l.attrs['href'], self.links))
+                DocURLGetter.links.extend(deque(map(lambda l: l.attrs['href'], links)))
+
+    @classmethod
+    def append_left_to_queue(cls, url):
+        DocURLGetter.links.appendleft(
+            '/'.join(url.replace('regulations', 'details')
+            .replace('content', 'details').split('/')[:-1])
+        )
 
 
 if __name__ == '__main__':
