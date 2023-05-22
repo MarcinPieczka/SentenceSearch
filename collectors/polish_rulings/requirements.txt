@@ -1,4 +1,4 @@
-requests==2.22.0
+requests==2.31.0
 argparse==1.4.0
 beautifulsoup4==4.8.1 
 futures3==1.0.0 
